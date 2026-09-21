@@ -9,7 +9,7 @@ description = "Send a Slack notification whenever a new email arrives, via Gmail
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
-authors = [{ email = "edgardo.piangco86@gmail.com" }]
+authors = [{ name = "Leo Chen", email = "leo.chen0412@outlook.com" }]
 keywords = ["gmail", "slack", "notifications", "pubsub", "email"]
 classifiers = [
   "Development Status :: 4 - Beta",

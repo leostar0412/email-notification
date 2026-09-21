@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Tests for email_notifier.notifier.SlackNotifier."""
 
 from __future__ import annotations

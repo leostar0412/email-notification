@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Provider interface.
 
 To support a new email service (Outlook, Yahoo, ...), implement

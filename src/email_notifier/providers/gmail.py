@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Gmail provider: OAuth tokens, watch registration, and history reads.
 
 Gmail's push notifications (``users.watch`` → Cloud Pub/Sub) do not contain

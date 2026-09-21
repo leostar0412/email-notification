@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Email provider registry.
 
 ``register`` maps a provider key (the ``provider = "..."`` value in an

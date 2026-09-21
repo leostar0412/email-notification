@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Coverage gap tests: the ``__main__`` shim and the provider registry."""
 
 from __future__ import annotations

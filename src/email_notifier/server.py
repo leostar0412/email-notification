@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """HTTP server that receives Gmail push notifications from Cloud Pub/Sub.
 
 Pub/Sub POSTs a JSON envelope to ``/gmail/push``; its ``message.data`` field

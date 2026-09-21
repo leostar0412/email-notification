@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Persistent per-account cursor storage.
 
 A push notification only says "something changed in this mailbox" — the actual

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Slack delivery via a single incoming webhook."""
 
 from __future__ import annotations

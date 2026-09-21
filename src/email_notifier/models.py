@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Data models shared across email providers and notifiers."""
 
 from __future__ import annotations

@@ -1,3 +1,5 @@
+# Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
+
 """Configuration loading.
 
 The app is configured with a TOML file (see ``config.example.toml``). A few
