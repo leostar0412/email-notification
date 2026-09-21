@@ -1,0 +1,47 @@
+# email-notifier configuration.
+#
+# Copy this file to config.toml and fill in your values. Secrets may instead
+# come from the environment, which takes precedence over this file:
+#
+#   SLACK_WEBHOOK_URL           overrides [slack].webhook_url
+#   PUBSUB_VERIFICATION_TOKEN   overrides [gmail].pubsub_verification_token
+#
+# Relative paths are resolved against the directory containing this file.
+
+# Where the per-account history cursor is persisted between pushes.
+state_file = "state.json"
+
+[slack]
+# Incoming-webhook URL for the channel that receives notifications.
+# docs/slack-setup.md walks through creating one.
+webhook_url = "https://hooks.slack.com/services/<team-id>/<webhook-id>/<secret>"
+
+[gmail]
+# OAuth client file downloaded from Google Cloud (docs/gmail-setup.md).
+# One OAuth client is shared by every Gmail account you connect.
+credentials_file = "credentials.json"
+
+# The Cloud Pub/Sub topic Gmail publishes change notifications to.
+# All accounts share this one topic.
+topic = "projects/your-project-id/topics/gmail-notify"
+
+# Optional shared secret. When set, Pub/Sub must deliver pushes to
+# https://your-host/gmail/push?token=<this value> or they are rejected.
+# pubsub_verification_token = "change-me"
+
+# One [[accounts]] block per email account to monitor. `provider` selects the
+# implementation ("gmail" is the only one built in today); `name` is your own
+# label for the account and must be unique.
+[[accounts]]
+name = "personal"
+email = "you@gmail.com"
+provider = "gmail"
+token_file = "tokens/personal.json"
+label_ids = ["INBOX"]
+
+[[accounts]]
+name = "work"
+email = "you.work@gmail.com"
+provider = "gmail"
+token_file = "tokens/work.json"
+label_ids = ["INBOX"]

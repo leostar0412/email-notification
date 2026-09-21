@@ -1,0 +1,28 @@
+# Secrets and local runtime files — never commit these
+config.toml
+credentials.json
+tokens/
+state.json
+state.json.lock
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+
+# Tooling
+.coverage
+.coverage.*
+htmlcov/
+.pytest_cache/
+.ruff_cache/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+._*
