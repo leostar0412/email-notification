@@ -13,7 +13,8 @@ from fastapi import FastAPI
 
 import email_notifier.cli as cli
 from email_notifier import __version__
-from email_notifier.cli import build_parser, main
+from email_notifier.cli import _cmd_auth, _push_urls, build_parser, main
+from email_notifier.config import AccountConfig, AppConfig, OutlookSettings, SlackConfig
 from email_notifier.models import WatchInfo
 from email_notifier.notifier import SlackError
 from email_notifier.providers.base import ProviderError
@@ -58,6 +59,7 @@ def write_config(tmp_path: Path, *, include_other: bool = False) -> Path:
 def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("PUBSUB_VERIFICATION_TOKEN", raising=False)
+    monkeypatch.delenv("OUTLOOK_CLIENT_STATE", raising=False)
 
 
 def flatten(text: str) -> str:
@@ -134,7 +136,7 @@ def test_auth_non_gmail_provider_rc2(
     assert rc == 2
     err = flatten(capsys.readouterr().err)
     assert "uses provider 'other'" in err
-    assert "supports only gmail" in err
+    assert "supports only gmail and outlook" in err
 
 
 def test_auth_happy_path(
@@ -230,7 +232,7 @@ def test_watch_all_accounts(
     assert "456" in out
     assert "2031-01-02 03:04" in out
     assert "—" in out  # expires_at=None renders as an em dash
-    assert "Watches expire after about 7 days" in out
+    assert "at least daily" in out
 
 
 def test_watch_single_account(
@@ -409,3 +411,130 @@ def test_test_slack_error_rc1(
     # __exit__ still runs when send_text raises inside the with block.
     assert exits == [True]
     assert "webhook said no" in flatten(capsys.readouterr().err)
+
+
+# ---------------------------------------------------------------- outlook auth and routes
+
+
+OUTLOOK_BODY = """
+state_file = "state.json"
+
+[slack]
+webhook_url = "https://hooks.slack.com/services/T/B/X"
+
+[outlook]
+client_id = "app-id"
+notification_url = "https://example.com/outlook/push"
+client_state = "sekret"
+
+[[accounts]]
+name = "ol"
+email = "ol@example.com"
+token_file = "token-ol.json"
+provider = "outlook"
+"""
+
+
+def test_auth_outlook_happy_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    clean_env(monkeypatch)
+    path = tmp_path / "config.toml"
+    path.write_text(OUTLOOK_BODY, encoding="utf-8")
+    calls: list[tuple[object, Path]] = []
+
+    def fake_flow(settings: object, token_file: Path) -> str:
+        calls.append((settings, token_file))
+        return "ol@example.com"
+
+    monkeypatch.setattr(cli, "run_outlook_oauth_flow", fake_flow)
+    rc = main(["--config", str(path), "auth", "ol"])
+    assert rc == 0
+    assert calls[0][1] == tmp_path / "token-ol.json"
+    assert "Token saved" in flatten(capsys.readouterr().out)
+    assert "Warning" not in flatten(capsys.readouterr().out)
+
+
+def test_auth_outlook_mismatched_email_warns(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    clean_env(monkeypatch)
+    path = tmp_path / "config.toml"
+    path.write_text(OUTLOOK_BODY, encoding="utf-8")
+    monkeypatch.setattr(cli, "run_outlook_oauth_flow", lambda *_: "other@example.com")
+    rc = main(["--config", str(path), "auth", "ol"])
+    assert rc == 0
+    out = flatten(capsys.readouterr().out)
+    assert "Warning" in out
+    assert "other@example.com" in out
+
+
+def test_auth_refuses_gmail_account_without_settings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    account = AccountConfig(
+        name="one",
+        email="one@example.com",
+        token_file=tmp_path / "token.json",
+        provider="gmail",
+    )
+    config = AppConfig(
+        slack=SlackConfig(webhook_url="https://hooks.slack.com/services/T/B/X"),
+        gmail=None,
+        accounts=(account,),
+        state_file=tmp_path / "state.json",
+    )
+    assert _cmd_auth(config, "one") == 2
+    assert "[gmail] is not configured" in flatten(capsys.readouterr().err)
+
+
+def test_auth_refuses_outlook_account_without_settings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    account = AccountConfig(
+        name="ol",
+        email="ol@example.com",
+        token_file=tmp_path / "token.json",
+        provider="outlook",
+    )
+    config = AppConfig(
+        slack=SlackConfig(webhook_url="https://hooks.slack.com/services/T/B/X"),
+        gmail=None,
+        accounts=(account,),
+        state_file=tmp_path / "state.json",
+    )
+    assert _cmd_auth(config, "ol") == 2
+    assert "[outlook] is not configured" in flatten(capsys.readouterr().err)
+
+
+def test_serve_prints_outlook_route(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    clean_env(monkeypatch)
+    path = tmp_path / "config.toml"
+    path.write_text(OUTLOOK_BODY, encoding="utf-8")
+    monkeypatch.setattr(cli.uvicorn, "run", lambda *args, **kwargs: None)
+    rc = main(["--config", str(path), "serve", "--host", "127.0.0.1", "--port", "9001"])
+    assert rc == 0
+    out = flatten(capsys.readouterr().out)
+    assert "http://127.0.0.1:9001/outlook/push" in out
+    assert "/gmail/push" not in out
+
+
+def test_push_urls_cover_each_combination(tmp_path: Path) -> None:
+    slack = SlackConfig(webhook_url="https://hooks.slack.com/services/T/B/X")
+    outlook = OutlookSettings(
+        client_id="app-id",
+        notification_url="https://example.com/outlook/push",
+        client_state="sekret",
+    )
+    base = {"slack": slack, "accounts": (), "state_file": tmp_path / "state.json"}
+    assert _push_urls(AppConfig(gmail=None, outlook=None, **base), "h", 1) == "http://h:1"
+    both = _push_urls(AppConfig(gmail=None, outlook=outlook, **base), "h", 1)
+    assert both == "http://h:1/outlook/push"

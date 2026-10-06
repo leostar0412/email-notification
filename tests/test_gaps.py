@@ -15,6 +15,7 @@ from email_notifier.config import AccountConfig, AppConfig, GmailSettings, Slack
 from email_notifier.providers import (
     EmailProvider,
     GmailProvider,
+    OutlookProvider,
     ProviderError,
     create_provider,
     get_provider_class,
@@ -48,9 +49,13 @@ def test_get_provider_class_returns_registered_gmail() -> None:
     assert get_provider_class("gmail") is GmailProvider
 
 
+def test_get_provider_class_returns_registered_outlook() -> None:
+    assert get_provider_class("outlook") is OutlookProvider
+
+
 def test_get_provider_class_unknown_name_raises_with_known_names() -> None:
-    with pytest.raises(ProviderError, match=r"Unknown provider 'outlook' \(registered: .*gmail"):
-        get_provider_class("outlook")
+    with pytest.raises(ProviderError, match=r"Unknown provider 'yahoo' \(registered: .*gmail"):
+        get_provider_class("yahoo")
 
 
 def test_create_provider_builds_gmail_provider(tmp_path: Path) -> None:

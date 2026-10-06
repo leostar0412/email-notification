@@ -3,9 +3,9 @@
 """Command-line interface.
 
 Commands:
-    auth        Run the Google OAuth consent flow for one configured account.
-    watch       Register or renew Gmail push watches (all accounts, or one).
-    serve       Run the Pub/Sub push endpoint.
+    auth        Run the OAuth consent flow for one configured account.
+    watch       Register or renew push watches (all accounts, or one).
+    serve       Run the push-notification endpoint.
     test-slack  Send a test message to the configured Slack webhook.
 """
 
@@ -25,6 +25,7 @@ from .notifier import SlackError, SlackNotifier
 from .providers import create_provider
 from .providers.base import ProviderError
 from .providers.gmail import run_oauth_flow
+from .providers.outlook import run_oauth_flow as run_outlook_oauth_flow
 from .server import create_app
 from .state import CursorStore
 
@@ -46,7 +47,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    auth = subparsers.add_parser("auth", help="Authorize one account with Google OAuth")
+    auth = subparsers.add_parser("auth", help="Authorize one configured account")
     auth.add_argument("account", help="Account name from the config file")
 
     watch = subparsers.add_parser("watch", help="Register or renew push watches")
@@ -92,20 +93,36 @@ def _cmd_auth(config: AppConfig, name: str) -> int:
     account = _resolve_account(config, name)
     if account is None:
         return 2
-    if account.provider != "gmail":
+    if account.provider == "gmail":
+        if config.gmail is None:
+            error_console.print(
+                "Account uses provider 'gmail' but [gmail] is not configured.",
+                markup=False,
+            )
+            return 2
+        console.print(f"Opening a browser to authorize [bold]{account.email}[/bold]…")
+        authorized_email = run_oauth_flow(config.gmail.credentials_file, account.token_file)
+    elif account.provider == "outlook":
+        if config.outlook is None:
+            error_console.print(
+                "Account uses provider 'outlook' but [outlook] is not configured.",
+                markup=False,
+            )
+            return 2
+        console.print(f"Opening a browser to authorize [bold]{account.email}[/bold]…")
+        authorized_email = run_outlook_oauth_flow(config.outlook, account.token_file)
+    else:
         error_console.print(
             f"Account {name!r} uses provider {account.provider!r}; "
-            "`auth` currently supports only gmail accounts."
+            "`auth` supports only gmail and outlook accounts."
         )
         return 2
-    console.print(f"Opening a browser to authorize [bold]{account.email}[/bold]…")
-    authorized_email = run_oauth_flow(config.gmail.credentials_file, account.token_file)
     console.print(f"[green]✓[/green] Token saved to [bold]{account.token_file}[/bold]")
     if authorized_email.lower() != account.email.lower():
         console.print(
             f"[yellow]Warning:[/yellow] you authorized [bold]{authorized_email}[/bold] "
             f"but this account is configured as [bold]{account.email}[/bold]. "
-            "Update the config or re-run auth with the right Google account."
+            "Update the config or re-run auth with the right account."
         )
     return 0
 
@@ -136,15 +153,26 @@ def _cmd_watch(config: AppConfig, name: str | None) -> int:
         table.add_row(account.name, account.email, info.cursor, expires)
     console.print(table)
     console.print(
-        "Watches expire after about 7 days — re-run [bold]email-notifier watch[/bold] "
-        "at least daily (e.g. from cron) to keep notifications flowing."
+        "Re-run [bold]email-notifier watch[/bold] before the expiry shown above, "
+        "at least daily (for example from cron), to keep notifications flowing."
     )
     return 0
 
 
+def _push_urls(config: AppConfig, host: str, port: int) -> str:
+    urls: list[str] = []
+    if config.gmail is not None:
+        urls.append(f"http://{host}:{port}/gmail/push")
+    if config.outlook is not None:
+        urls.append(f"http://{host}:{port}/outlook/push")
+    if not urls:
+        return f"http://{host}:{port}"
+    return " ".join(urls)
+
+
 def _cmd_serve(config: AppConfig, host: str, port: int) -> int:
     console.print(
-        f"Serving push endpoint on [bold]http://{host}:{port}/gmail/push[/bold] "
+        f"Serving push endpoint on [bold]{_push_urls(config, host, port)}[/bold] "
         f"for {len(config.accounts)} account(s)…"
     )
     uvicorn.run(create_app(config), host=host, port=port)

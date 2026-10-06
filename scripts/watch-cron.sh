@@ -1,10 +1,11 @@
 #!/bin/bash
 # Copyright (c) 2026 Leo Chen <leo.chen0412@outlook.com>
 #
-# Renew the Gmail -> Pub/Sub push watches from cron.
+# Renew push watches (Gmail and Outlook) from cron.
 #
-# Gmail watches expire after ~7 days, so this must run at least daily or
-# notifications stop arriving with no other symptom. Install with:
+# Gmail watches expire after about 7 days. Outlook subscriptions expire
+# sooner. Run at least daily or notifications stop arriving with no other
+# symptom. Install with:
 #
 #   crontab -e
 #   0 6,18 * * * /bin/bash /Volumes/leo_disk/Freelancer/email-notification/scripts/watch-cron.sh

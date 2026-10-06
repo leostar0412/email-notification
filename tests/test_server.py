@@ -10,7 +10,13 @@ from pathlib import Path
 
 from fastapi.testclient import TestClient
 
-from email_notifier.config import AccountConfig, AppConfig, GmailSettings, SlackConfig
+from email_notifier.config import (
+    AccountConfig,
+    AppConfig,
+    GmailSettings,
+    OutlookSettings,
+    SlackConfig,
+)
 from email_notifier.models import EmailMessage
 from email_notifier.notifier import SlackError
 from email_notifier.providers.base import ProviderError
@@ -22,20 +28,50 @@ from email_notifier.state import CursorStore
 # ---------------------------------------------------------------------------
 
 
-def make_account(tmp_path: Path, name: str = "work", email: str = "work@example.com"):
-    return AccountConfig(name=name, email=email, token_file=tmp_path / f"{name}-token.json")
+def make_account(
+    tmp_path: Path,
+    name: str = "work",
+    email: str = "work@example.com",
+    provider: str = "gmail",
+):
+    return AccountConfig(
+        name=name,
+        email=email,
+        token_file=tmp_path / f"{name}-token.json",
+        provider=provider,
+    )
 
 
-def make_config(tmp_path: Path, accounts, token: str | None = None) -> AppConfig:
-    return AppConfig(
-        slack=SlackConfig(webhook_url="https://hooks.slack.com/services/T0/B0/XYZ"),
-        gmail=GmailSettings(
+def outlook_settings(secret: str = "sekret") -> OutlookSettings:
+    return OutlookSettings(
+        client_id="app-id",
+        notification_url="https://example.com/outlook/push",
+        client_state=secret,
+        tenant="common",
+    )
+
+
+def make_config(
+    tmp_path: Path,
+    accounts,
+    token: str | None = None,
+    *,
+    gmail: bool = True,
+    outlook: OutlookSettings | None = None,
+) -> AppConfig:
+    gmail_settings = None
+    if gmail:
+        gmail_settings = GmailSettings(
             credentials_file=tmp_path / "credentials.json",
             topic="projects/proj/topics/mail",
             pubsub_verification_token=token,
-        ),
+        )
+    return AppConfig(
+        slack=SlackConfig(webhook_url="https://hooks.slack.com/services/T0/B0/XYZ"),
+        gmail=gmail_settings,
         accounts=tuple(accounts),
         state_file=tmp_path / "state.json",
+        outlook=outlook,
     )
 
 
@@ -83,11 +119,26 @@ class FakeNotifier:
 class FakeProvider:
     """Records fetch cursors; returns a preset (messages, new_cursor) or raises."""
 
-    def __init__(self, messages=(), new_cursor: str = "999", error: Exception | None = None):
+    def __init__(
+        self,
+        messages=(),
+        new_cursor: str = "999",
+        error: Exception | None = None,
+        now_cursor: str = "now-cursor",
+    ):
         self.cursors: list[str] = []
         self.messages = list(messages)
         self.new_cursor = new_cursor
         self.error = error
+        self.now_cursor = now_cursor
+        self.current_calls = 0
+        self.current_error: Exception | None = None
+
+    def current_cursor(self) -> str:
+        self.current_calls += 1
+        if self.current_error is not None:
+            raise self.current_error
+        return self.now_cursor
 
     def fetch_messages_since(self, cursor: str):
         self.cursors.append(cursor)
@@ -108,10 +159,19 @@ class FakeFactory:
         return self.providers[account.name]
 
 
-def build(tmp_path: Path, *, token=None, accounts=None, providers=None, notifier=None):
+def build(
+    tmp_path: Path,
+    *,
+    token=None,
+    accounts=None,
+    providers=None,
+    notifier=None,
+    gmail: bool = True,
+    outlook: OutlookSettings | None = None,
+):
     """Wire up an app with fakes; return (client, store, notifier, factory)."""
     accounts = accounts if accounts is not None else [make_account(tmp_path)]
-    config = make_config(tmp_path, accounts, token=token)
+    config = make_config(tmp_path, accounts, token=token, gmail=gmail, outlook=outlook)
     store = CursorStore(config.state_file)
     notifier = notifier or FakeNotifier()
     factory = FakeFactory(providers or {a.name: FakeProvider() for a in accounts})
@@ -394,3 +454,299 @@ def test_two_accounts_have_separate_providers_and_cursors(tmp_path):
     assert [m.message_id for m in notifier.sent] == ["w1", "h1"]
     assert store.get("work") == "11"
     assert store.get("home") == "22"
+
+
+# ---------------------------------------------------------------------------
+# /outlook/push
+# ---------------------------------------------------------------------------
+
+
+def graph_body(*items: dict) -> dict:
+    return {"value": list(items)}
+
+
+def graph_item(
+    account: str = "work",
+    secret: str = "sekret",
+    *,
+    lifecycle: str | None = None,
+    client_state: str | None = None,
+) -> dict:
+    item = {
+        "subscriptionId": "sub-1",
+        "clientState": client_state if client_state is not None else f"{secret}:{account}",
+        "changeType": "created",
+        "resource": "Users/u/Messages/m",
+        "resourceData": {"id": "m"},
+    }
+    if lifecycle is not None:
+        item["lifecycleEvent"] = lifecycle
+    return item
+
+
+def test_outlook_validation_token_is_echoed(tmp_path):
+    client, _, notifier, factory = build(tmp_path, outlook=outlook_settings())
+    response = client.post("/outlook/push?validationToken=abc%20123")
+    assert response.status_code == 200
+    assert response.text == "abc 123"
+    assert response.headers["content-type"].startswith("text/plain")
+    assert notifier.sent == []
+    assert factory.calls == []
+
+
+def test_outlook_route_absent_without_settings(tmp_path):
+    client, _, _, _ = build(tmp_path)
+    response = client.post("/outlook/push", json=graph_body(graph_item()))
+    assert response.status_code == 404
+
+
+def test_gmail_route_absent_without_gmail_settings(tmp_path, caplog):
+    account = make_account(tmp_path, provider="outlook")
+    with caplog.at_level("WARNING", logger="email_notifier.server"):
+        client, _, _, _ = build(
+            tmp_path,
+            accounts=[account],
+            gmail=False,
+            outlook=outlook_settings(),
+        )
+    assert client.post("/gmail/push", json=envelope()).status_code == 404
+    assert not any("will accept pushes from anyone" in record.message for record in caplog.records)
+
+
+def test_outlook_non_string_client_state_is_acked(tmp_path):
+    client, _, notifier, _ = build(tmp_path, outlook=outlook_settings())
+    response = client.post("/outlook/push", json={"value": [{"clientState": 5}]})
+    assert response.status_code == 202
+    assert notifier.sent == []
+
+
+def test_outlook_bad_client_state_is_acked(tmp_path, caplog):
+    provider = FakeProvider(messages=[make_message()])
+    client, store, notifier, _ = build(
+        tmp_path,
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    store.set("work", "cursor")
+    with caplog.at_level("WARNING", logger="email_notifier.server"):
+        response = client.post(
+            "/outlook/push",
+            json=graph_body(graph_item(client_state="nope:work")),
+        )
+    assert response.status_code == 202
+    assert provider.cursors == []
+    assert notifier.sent == []
+    assert any("bad clientState" in record.message for record in caplog.records)
+
+
+def test_outlook_client_state_without_account_name_is_acked(tmp_path):
+    client, _, notifier, _ = build(tmp_path, outlook=outlook_settings())
+    response = client.post(
+        "/outlook/push",
+        json=graph_body(graph_item(client_state="sekret:")),
+    )
+    assert response.status_code == 202
+    assert notifier.sent == []
+
+
+def test_outlook_unknown_account_is_acked(tmp_path, caplog):
+    client, _, notifier, _ = build(tmp_path, outlook=outlook_settings())
+    with caplog.at_level("WARNING", logger="email_notifier.server"):
+        response = client.post("/outlook/push", json=graph_body(graph_item(account="ghost")))
+    assert response.status_code == 202
+    assert notifier.sent == []
+    assert any("unconfigured account ghost" in record.message for record in caplog.records)
+
+
+def test_outlook_ignores_gmail_account_with_matching_name(tmp_path):
+    account = make_account(tmp_path, name="work", provider="gmail")
+    provider = FakeProvider()
+    client, store, notifier, _ = build(
+        tmp_path,
+        accounts=[account],
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    store.set("work", "50")
+    response = client.post("/outlook/push", json=graph_body(graph_item()))
+    assert response.status_code == 202
+    assert provider.cursors == []
+    assert notifier.sent == []
+
+
+def test_outlook_unparsable_body_is_acked(tmp_path):
+    client, _, _, _ = build(tmp_path, outlook=outlook_settings())
+    response = client.post(
+        "/outlook/push",
+        content=b"not-json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert response.status_code == 202
+
+
+def test_outlook_body_not_an_object_is_acked(tmp_path):
+    client, _, _, _ = build(tmp_path, outlook=outlook_settings())
+    response = client.post("/outlook/push", json=[1, 2])
+    assert response.status_code == 202
+
+
+def test_outlook_missing_value_array_is_acked(tmp_path):
+    client, _, _, _ = build(tmp_path, outlook=outlook_settings())
+    response = client.post("/outlook/push", json={"hello": "there"})
+    assert response.status_code == 202
+
+
+def test_outlook_skips_non_dict_items(tmp_path):
+    account = make_account(tmp_path, provider="outlook")
+    provider = FakeProvider(messages=[make_message()], new_cursor="2")
+    client, store, notifier, _ = build(
+        tmp_path,
+        accounts=[account],
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    store.set("work", "1")
+    response = client.post(
+        "/outlook/push",
+        json={"value": ["nope", graph_item()]},
+    )
+    assert response.status_code == 202
+    assert provider.cursors == ["1"]
+    assert len(notifier.sent) == 1
+
+
+def test_outlook_lifecycle_event_is_acked_without_fetch(tmp_path, caplog):
+    provider = FakeProvider()
+    client, store, notifier, factory = build(
+        tmp_path,
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    store.set("work", "1")
+    with caplog.at_level("INFO", logger="email_notifier.server"):
+        response = client.post(
+            "/outlook/push",
+            json=graph_body(graph_item(lifecycle="reauthorizationRequired")),
+        )
+    assert response.status_code == 202
+    assert factory.calls == []
+    assert notifier.sent == []
+    assert any("reauthorizationRequired" in record.message for record in caplog.records)
+
+
+def test_outlook_first_push_stores_current_cursor_without_fetch(tmp_path):
+    account = make_account(tmp_path, provider="outlook")
+    provider = FakeProvider(messages=[make_message()], now_cursor="fresh")
+    client, store, notifier, _ = build(
+        tmp_path,
+        accounts=[account],
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    response = client.post("/outlook/push", json=graph_body(graph_item()))
+    assert response.status_code == 202
+    assert provider.current_calls == 1
+    assert provider.cursors == []
+    assert notifier.sent == []
+    assert store.get("work") == "fresh"
+
+
+def test_outlook_push_fetches_and_advances_cursor(tmp_path):
+    account = make_account(tmp_path, provider="outlook")
+    provider = FakeProvider(messages=[make_message("m9")], new_cursor="next")
+    client, store, notifier, _ = build(
+        tmp_path,
+        accounts=[account],
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    store.set("work", "prev")
+    response = client.post("/outlook/push", json=graph_body(graph_item(), graph_item()))
+    assert response.status_code == 202
+    assert provider.cursors == ["prev"]
+    assert [message.message_id for message in notifier.sent] == ["m9"]
+    assert store.get("work") == "next"
+
+
+def test_outlook_two_accounts_in_one_batch(tmp_path):
+    work = make_account(tmp_path, name="work", provider="outlook")
+    home = make_account(tmp_path, name="home", email="home@example.com", provider="outlook")
+    providers = {
+        "work": FakeProvider(messages=[make_message("w", account="work")], new_cursor="w2"),
+        "home": FakeProvider(messages=[make_message("h", account="home")], new_cursor="h2"),
+    }
+    client, store, notifier, _ = build(
+        tmp_path,
+        accounts=[work, home],
+        outlook=outlook_settings(),
+        providers=providers,
+    )
+    store.set("work", "w1")
+    store.set("home", "h1")
+    response = client.post(
+        "/outlook/push",
+        json=graph_body(graph_item("work"), graph_item("home")),
+    )
+    assert response.status_code == 202
+    assert providers["work"].cursors == ["w1"]
+    assert providers["home"].cursors == ["h1"]
+    assert [message.message_id for message in notifier.sent] == ["w", "h"]
+    assert store.get("work") == "w2"
+    assert store.get("home") == "h2"
+
+
+def test_outlook_provider_error_returns_500_and_keeps_cursor(tmp_path):
+    account = make_account(tmp_path, provider="outlook")
+    provider = FakeProvider(error=ProviderError("graph down"))
+    client, store, notifier, _ = build(
+        tmp_path,
+        accounts=[account],
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    store.set("work", "prev")
+    response = client.post("/outlook/push", json=graph_body(graph_item()))
+    assert response.status_code == 500
+    assert response.json() == {"detail": "processing failed"}
+    assert notifier.sent == []
+    assert store.get("work") == "prev"
+
+
+def test_outlook_missing_cursor_error_returns_500(tmp_path):
+    account = make_account(tmp_path, provider="outlook")
+    provider = FakeProvider()
+    provider.current_error = ProviderError("no delta")
+    client, store, _, _ = build(
+        tmp_path,
+        accounts=[account],
+        outlook=outlook_settings(),
+        providers={"work": provider},
+    )
+    response = client.post("/outlook/push", json=graph_body(graph_item()))
+    assert response.status_code == 500
+    assert store.get("work") is None
+
+
+def test_outlook_second_account_failure_keeps_its_cursor(tmp_path):
+    work = make_account(tmp_path, name="work", provider="outlook")
+    home = make_account(tmp_path, name="home", email="home@example.com", provider="outlook")
+    providers = {
+        "work": FakeProvider(messages=[make_message("w", account="work")], new_cursor="w2"),
+        "home": FakeProvider(error=ProviderError("nope")),
+    }
+    client, store, notifier, _ = build(
+        tmp_path,
+        accounts=[work, home],
+        outlook=outlook_settings(),
+        providers=providers,
+    )
+    store.set("work", "w1")
+    store.set("home", "h1")
+    response = client.post(
+        "/outlook/push",
+        json=graph_body(graph_item("home"), graph_item("work")),
+    )
+    assert response.status_code == 500
+    assert store.get("home") == "h1"
+    assert store.get("work") == "w1"
+    assert notifier.sent == []

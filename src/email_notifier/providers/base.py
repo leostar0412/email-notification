@@ -2,9 +2,9 @@
 
 """Provider interface.
 
-To support a new email service (Outlook, Yahoo, ...), implement
-:class:`EmailProvider` and register the class in
-:mod:`email_notifier.providers`. See ``docs/extending.md`` for a walkthrough.
+To support a new email service, implement :class:`EmailProvider` and register
+the class in :mod:`email_notifier.providers`. See ``docs/extending.md`` for a
+walkthrough.
 """
 
 from __future__ import annotations

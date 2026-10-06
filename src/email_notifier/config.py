@@ -7,6 +7,7 @@ secrets can instead come from the environment, which takes precedence:
 
 - ``SLACK_WEBHOOK_URL`` overrides ``[slack].webhook_url``
 - ``PUBSUB_VERIFICATION_TOKEN`` overrides ``[gmail].pubsub_verification_token``
+- ``OUTLOOK_CLIENT_STATE`` overrides ``[outlook].client_state``
 
 Relative paths in the file are resolved against the config file's directory,
 so the config can be loaded from anywhere.
@@ -38,6 +39,14 @@ class GmailSettings:
 
 
 @dataclass(frozen=True, slots=True)
+class OutlookSettings:
+    client_id: str
+    notification_url: str
+    client_state: str
+    tenant: str = "common"
+
+
+@dataclass(frozen=True, slots=True)
 class AccountConfig:
     name: str
     email: str
@@ -49,9 +58,10 @@ class AccountConfig:
 @dataclass(frozen=True, slots=True)
 class AppConfig:
     slack: SlackConfig
-    gmail: GmailSettings
+    gmail: GmailSettings | None
     accounts: tuple[AccountConfig, ...]
     state_file: Path
+    outlook: OutlookSettings | None = None
 
     def account_for_email(self, email: str) -> AccountConfig | None:
         needle = email.strip().lower()
@@ -81,11 +91,30 @@ def load_config(path: str | Path) -> AppConfig:
         raise ConfigError(f"Invalid TOML in {path}: {exc}") from exc
 
     base = path.resolve().parent
+    slack = _load_slack(raw)
+    # Validate a section that is present before requiring accounts, so a broken
+    # [gmail] or [outlook] table is reported even when [[accounts]] is missing.
+    gmail = _load_gmail(raw, base)
+    outlook = _load_outlook(raw)
+    accounts = _load_accounts(raw, base)
+    used = {account.provider for account in accounts}
+    if "gmail" in used and gmail is None:
+        raise ConfigError(
+            "An account uses provider 'gmail' but the config has no [gmail] section "
+            "(see docs/gmail-setup.md)."
+        )
+    if "outlook" in used and outlook is None:
+        raise ConfigError(
+            "An account uses provider 'outlook' but the config has no [outlook] section "
+            "(see docs/outlook-setup.md)."
+        )
+    _check_outlook_client_state(outlook, accounts)
     return AppConfig(
-        slack=_load_slack(raw),
-        gmail=_load_gmail(raw, base),
-        accounts=_load_accounts(raw, base),
+        slack=slack,
+        gmail=gmail,
+        accounts=accounts,
         state_file=base / str(raw.get("state_file", "state.json")),
+        outlook=outlook,
     )
 
 
@@ -102,7 +131,9 @@ def _load_slack(raw: dict[str, Any]) -> SlackConfig:
     return SlackConfig(webhook_url=str(webhook_url))
 
 
-def _load_gmail(raw: dict[str, Any], base: Path) -> GmailSettings:
+def _load_gmail(raw: dict[str, Any], base: Path) -> GmailSettings | None:
+    if "gmail" not in raw:
+        return None
     section = _section(raw, "gmail")
     credentials_file = _require(section, "credentials_file", "[gmail]")
     topic = _require(section, "topic", "[gmail]")
@@ -116,6 +147,53 @@ def _load_gmail(raw: dict[str, Any], base: Path) -> GmailSettings:
         topic=topic,
         pubsub_verification_token=str(token) if token else None,
     )
+
+
+# Graph rejects a clientState longer than 128 characters. The push route
+# appends ":" and the account name so one secret can identify the account.
+_CLIENT_STATE_LIMIT = 128
+
+
+def _load_outlook(raw: dict[str, Any]) -> OutlookSettings | None:
+    if "outlook" not in raw:
+        return None
+    section = _section(raw, "outlook")
+    client_id = _require(section, "client_id", "[outlook]")
+    notification_url = _require(section, "notification_url", "[outlook]")
+    if not notification_url.startswith("https://"):
+        raise ConfigError("[outlook].notification_url must be an https:// URL")
+    tenant = section.get("tenant", "common")
+    if not isinstance(tenant, str) or not tenant.strip():
+        raise ConfigError("[outlook].tenant must be a non-empty string")
+    state = os.environ.get("OUTLOOK_CLIENT_STATE") or section.get("client_state")
+    if not state or not isinstance(state, str):
+        raise ConfigError(
+            "No Outlook client state configured: set [outlook].client_state in the config "
+            "file or the OUTLOOK_CLIENT_STATE environment variable (see docs/outlook-setup.md)."
+        )
+    return OutlookSettings(
+        client_id=client_id,
+        notification_url=notification_url,
+        client_state=state,
+        tenant=tenant.strip(),
+    )
+
+
+def _check_outlook_client_state(
+    outlook: OutlookSettings | None, accounts: tuple[AccountConfig, ...]
+) -> None:
+    if outlook is None:
+        return
+    for account in accounts:
+        if account.provider != "outlook":
+            continue
+        composed = f"{outlook.client_state}:{account.name}"
+        if len(composed) > _CLIENT_STATE_LIMIT:
+            raise ConfigError(
+                f"Outlook clientState for account {account.name!r} is {len(composed)} "
+                f"characters; Microsoft Graph allows at most {_CLIENT_STATE_LIMIT}. "
+                "Shorten [outlook].client_state or the account name."
+            )
 
 
 def _load_accounts(raw: dict[str, Any], base: Path) -> tuple[AccountConfig, ...]:

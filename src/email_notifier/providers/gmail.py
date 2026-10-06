@@ -112,6 +112,10 @@ class GmailProvider(EmailProvider):
 
     @classmethod
     def from_config(cls, account: AccountConfig, config: AppConfig) -> GmailProvider:
+        if config.gmail is None:
+            raise ProviderError(
+                f"Account {account.name!r} uses provider 'gmail' but [gmail] is not configured."
+            )
         return cls(account, config.gmail)
 
     @property

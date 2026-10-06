@@ -14,6 +14,7 @@ from email_notifier.config import (
     AppConfig,
     ConfigError,
     GmailSettings,
+    OutlookSettings,
     SlackConfig,
     load_config,
 )
@@ -25,6 +26,12 @@ VALID_TOML = """
     [gmail]
     credentials_file = "credentials.json"
     topic = "projects/my-proj/topics/gmail-push"
+
+    [outlook]
+    client_id = "app-id"
+    tenant = "common"
+    notification_url = "https://example.com/outlook/push"
+    client_state = "state-secret"
 
     [[accounts]]
     name = "personal"
@@ -43,6 +50,7 @@ VALID_TOML = """
 def clear_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("SLACK_WEBHOOK_URL", raising=False)
     monkeypatch.delenv("PUBSUB_VERIFICATION_TOKEN", raising=False)
+    monkeypatch.delenv("OUTLOOK_CLIENT_STATE", raising=False)
 
 
 def write_config(tmp_path: Path, text: str = VALID_TOML) -> Path:
@@ -69,6 +77,12 @@ def test_load_config_happy_path_two_accounts(tmp_path, monkeypatch):
         topic="projects/my-proj/topics/gmail-push",
         pubsub_verification_token=None,
     )
+    assert config.outlook == OutlookSettings(
+        client_id="app-id",
+        notification_url="https://example.com/outlook/push",
+        client_state="state-secret",
+        tenant="common",
+    )
     assert len(config.accounts) == 2
 
     first, second = config.accounts
@@ -86,6 +100,7 @@ def test_load_config_happy_path_two_accounts(tmp_path, monkeypatch):
     assert second.label_ids == ("INBOX", "IMPORTANT")
 
     # Relative paths resolve against the config file's directory.
+    assert config.gmail is not None
     assert config.gmail.credentials_file.is_absolute()
     assert first.token_file.is_absolute()
     assert config.state_file == base / "state.json"
@@ -416,3 +431,166 @@ def test_account_by_name_miss(tmp_path, monkeypatch):
     clear_env(monkeypatch)
     config = load_config(write_config(tmp_path))
     assert config.account_by_name("does-not-exist") is None
+
+
+# --------------------------------------------------------------------------- #
+# [outlook]
+# --------------------------------------------------------------------------- #
+
+GMAIL_ONLY = """
+    [slack]
+    webhook_url = "https://hooks.slack.com/services/T0/B0/XYZ"
+
+    [gmail]
+    credentials_file = "credentials.json"
+    topic = "projects/my-proj/topics/gmail-push"
+
+    [[accounts]]
+    name = "personal"
+    email = "alice@example.com"
+    token_file = "tokens/alice.json"
+"""
+
+OUTLOOK_ONLY = """
+    [slack]
+    webhook_url = "https://hooks.slack.com/services/T0/B0/XYZ"
+
+    [outlook]
+    client_id = "app-id"
+    notification_url = "https://example.com/outlook/push"
+    client_state = "state-secret"
+
+    [[accounts]]
+    name = "work"
+    email = "bob@example.com"
+    token_file = "tokens/bob.json"
+    provider = "outlook"
+"""
+
+
+def test_gmail_only_config_leaves_outlook_unset(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    config = load_config(write_config(tmp_path, GMAIL_ONLY))
+    assert config.outlook is None
+    assert config.gmail is not None
+    assert config.accounts[0].provider == "gmail"
+
+
+def test_outlook_only_config_leaves_gmail_unset(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    config = load_config(write_config(tmp_path, OUTLOOK_ONLY))
+    assert config.gmail is None
+    assert config.outlook == OutlookSettings(
+        client_id="app-id",
+        notification_url="https://example.com/outlook/push",
+        client_state="state-secret",
+        tenant="common",
+    )
+
+
+def test_gmail_account_requires_gmail_section(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = VALID_TOML.replace("[gmail]", "").replace('credentials_file = "credentials.json"', "")
+    text = text.replace('topic = "projects/my-proj/topics/gmail-push"', "")
+    with pytest.raises(ConfigError, match=r"no \[gmail\] section"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_account_requires_outlook_section(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = VALID_TOML.replace("[outlook]", "").replace('client_id = "app-id"', "")
+    text = text.replace('tenant = "common"', "")
+    text = text.replace('notification_url = "https://example.com/outlook/push"', "")
+    text = text.replace('client_state = "state-secret"', "")
+    with pytest.raises(ConfigError, match=r"no \[outlook\] section"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_not_a_table(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = 'outlook = "oops"\n' + GMAIL_ONLY
+    with pytest.raises(ConfigError, match=r"\[outlook\] must be a table"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_missing_client_id(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = OUTLOOK_ONLY.replace('client_id = "app-id"', "")
+    with pytest.raises(ConfigError, match=r"\[outlook\] is missing required key 'client_id'"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_missing_notification_url(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = OUTLOOK_ONLY.replace('notification_url = "https://example.com/outlook/push"', "")
+    with pytest.raises(ConfigError, match=r"missing required key 'notification_url'"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_notification_url_not_https(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = OUTLOOK_ONLY.replace(
+        'notification_url = "https://example.com/outlook/push"',
+        'notification_url = "http://example.com/outlook/push"',
+    )
+    with pytest.raises(ConfigError, match=r"must be an https:// URL"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_tenant_not_a_string(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = OUTLOOK_ONLY.replace(
+        'notification_url = "https://example.com/outlook/push"',
+        'notification_url = "https://example.com/outlook/push"\n    tenant = 5',
+    )
+    with pytest.raises(ConfigError, match=r"\[outlook\].tenant must be a non-empty string"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_tenant_blank(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = OUTLOOK_ONLY.replace(
+        'notification_url = "https://example.com/outlook/push"',
+        'notification_url = "https://example.com/outlook/push"\n    tenant = "   "',
+    )
+    with pytest.raises(ConfigError, match=r"\[outlook\].tenant must be a non-empty string"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_client_state_missing(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = OUTLOOK_ONLY.replace('client_state = "state-secret"', "")
+    with pytest.raises(ConfigError, match="No Outlook client state configured"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_client_state_empty_string(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    text = OUTLOOK_ONLY.replace('client_state = "state-secret"', 'client_state = ""')
+    with pytest.raises(ConfigError, match="No Outlook client state configured"):
+        load_config(write_config(tmp_path, text))
+
+
+def test_outlook_client_state_env_override(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    monkeypatch.setenv("OUTLOOK_CLIENT_STATE", "from-env")
+    config = load_config(write_config(tmp_path, OUTLOOK_ONLY))
+    assert config.outlook is not None
+    assert config.outlook.client_state == "from-env"
+
+
+def test_outlook_client_state_env_only(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    monkeypatch.setenv("OUTLOOK_CLIENT_STATE", "from-env")
+    text = OUTLOOK_ONLY.replace('client_state = "state-secret"', "")
+    config = load_config(write_config(tmp_path, text))
+    assert config.outlook is not None
+    assert config.outlook.client_state == "from-env"
+
+
+def test_outlook_client_state_too_long(tmp_path, monkeypatch):
+    clear_env(monkeypatch)
+    secret = "s" * 124
+    text = OUTLOOK_ONLY.replace('client_state = "state-secret"', f'client_state = "{secret}"')
+    with pytest.raises(ConfigError, match="allows at most 128"):
+        load_config(write_config(tmp_path, text))

@@ -5,6 +5,7 @@
 #
 #   SLACK_WEBHOOK_URL           overrides [slack].webhook_url
 #   PUBSUB_VERIFICATION_TOKEN   overrides [gmail].pubsub_verification_token
+#   OUTLOOK_CLIENT_STATE        overrides [outlook].client_state
 #
 # Relative paths are resolved against the directory containing this file.
 
@@ -29,9 +30,18 @@ topic = "projects/your-project-id/topics/gmail-notify"
 # https://your-host/gmail/push?token=<this value> or they are rejected.
 # pubsub_verification_token = "change-me"
 
-# One [[accounts]] block per email account to monitor. `provider` selects the
-# implementation ("gmail" is the only one built in today); `name` is your own
-# label for the account and must be unique.
+# Optional. Required only when an [[accounts]] entry uses provider = "outlook".
+# docs/outlook-setup.md walks through the Entra app registration.
+# One app registration is shared by every Outlook account.
+[outlook]
+client_id = "<application-client-id>"
+tenant = "common"
+notification_url = "https://your-host/outlook/push"
+client_state = "change-me"
+
+# One [[accounts]] block per email account to monitor. `provider` is "gmail"
+# or "outlook". `name` is your own label and must be unique.
+# label_ids applies to Gmail only. Outlook always watches the inbox.
 [[accounts]]
 name = "personal"
 email = "you@gmail.com"
@@ -45,3 +55,9 @@ email = "you.work@gmail.com"
 provider = "gmail"
 token_file = "tokens/work.json"
 label_ids = ["INBOX"]
+
+[[accounts]]
+name = "outlook"
+email = "you@outlook.com"
+provider = "outlook"
+token_file = "tokens/outlook.json"

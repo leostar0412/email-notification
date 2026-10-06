@@ -496,6 +496,19 @@ def test_current_cursor_http_error_raises_provider_error():
 # ---------------------------------------------------------------------------
 
 
+def test_from_config_requires_gmail_settings():
+    account = make_account()
+    config = AppConfig(
+        slack=SlackConfig(webhook_url="https://hooks.example.com/x"),
+        gmail=None,
+        accounts=(account,),
+        state_file=Path("/nonexistent/state.json"),
+    )
+
+    with pytest.raises(ProviderError, match=r"\[gmail\] is not configured"):
+        GmailProvider.from_config(account, config)
+
+
 def test_from_config_wires_account_and_gmail_settings():
     account = make_account()
     config = AppConfig(

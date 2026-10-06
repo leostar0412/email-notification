@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "email-notifier"
 version = "0.1.0"
-description = "Send a Slack notification whenever a new email arrives, via Gmail Pub/Sub push notifications."
+description = "Send a Slack notification whenever a new email arrives, via Gmail or Outlook push notifications."
 readme = "README.md"
 requires-python = ">=3.13"
 license = "MIT"
 authors = [{ name = "Leo Chen", email = "leo.chen0412@outlook.com" }]
-keywords = ["gmail", "slack", "notifications", "pubsub", "email"]
+keywords = ["gmail", "outlook", "slack", "notifications", "pubsub", "email"]
 classifiers = [
   "Development Status :: 4 - Beta",
   "Programming Language :: Python :: 3.13",
@@ -24,6 +24,7 @@ dependencies = [
   "google-api-python-client>=2.140",
   "google-auth>=2.30",
   "google-auth-oauthlib>=1.2",
+  "msal>=1.31",
 ]
 
 [project.optional-dependencies]

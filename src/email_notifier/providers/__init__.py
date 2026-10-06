@@ -3,8 +3,8 @@
 """Email provider registry.
 
 ``register`` maps a provider key (the ``provider = "..."`` value in an
-account's config) to its implementation class. Gmail is built in; new
-providers register here — see ``docs/extending.md``.
+account's config) to its implementation class. Gmail and Outlook are built
+in; new providers register here. See ``docs/extending.md``.
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 
 from .base import EmailProvider, ProviderError
 from .gmail import GmailProvider
+from .outlook import OutlookProvider
 
 if TYPE_CHECKING:
     from ..config import AccountConfig, AppConfig
@@ -40,10 +41,12 @@ def create_provider(account: AccountConfig, config: AppConfig) -> EmailProvider:
 
 
 register(GmailProvider)
+register(OutlookProvider)
 
 __all__ = [
     "EmailProvider",
     "GmailProvider",
+    "OutlookProvider",
     "ProviderError",
     "create_provider",
     "get_provider_class",
